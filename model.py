@@ -117,11 +117,16 @@ class SelfAttention(nn.Module):
         self.cache_k = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim))
         self.cache_v = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim))
 
+        self.id_cache_k = {}
+        self.id_cache_v = {}
+
     def forward(
         self,
         x: torch.Tensor,
         start_pos: int,
-        freqs_complex: torch.Tensor
+        freqs_complex: torch.Tensor,
+        cache_id=None,
+        to_cache=False
     ):
         batch_size, seq_len, _ = x.shape  # (B, 1, Dim)
 
@@ -147,11 +152,16 @@ class SelfAttention(nn.Module):
         # Replace the entry in the cache
         self.cache_k[:batch_size, start_pos : start_pos + seq_len] = xk
         self.cache_v[:batch_size, start_pos : start_pos + seq_len] = xv
+        # update cache id based on that
+        if to_cache and cache_id:
+          self.id_cache_k[cache_id] = self.cache_k
+          self.id_cache_v[cache_id] = self.cache_v
 
         # (B, Seq_Len_KV, H_KV, Head_Dim)
         keys = self.cache_k[:batch_size, : start_pos + seq_len]
         # (B, Seq_Len_KV, H_KV, Head_Dim)
         values = self.cache_v[:batch_size, : start_pos + seq_len]
+
 
         # Since every group of Q shares the same K and V heads, just repeat the K and V heads for every Q in the same group.
 
@@ -177,6 +187,10 @@ class SelfAttention(nn.Module):
         # (B, H_Q, 1, Head_Dim) -> (B, 1, H_Q, Head_Dim) -> (B, 1, Dim)
         output = (output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1))
         return self.wo(output) # (B, 1, Dim) -> (B, 1, Dim)
+
+    def set_from_cache(self, cache_id):
+        self.cache_k = self.id_cache_k[cache_id]
+        self.cache_v = self.id_cache_v[cache_id]
 
 
 class FeedForward(nn.Module):
@@ -226,14 +240,19 @@ class EncoderBlock(nn.Module):
         # Normalization BEFORE the feed forward block
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
     
-    def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor):
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor, cache_id= None, to_cache=False):
         # (B, Seq_Len, Dim) + (B, Seq_Len, Dim) --> (B, Seq_Len, Dim)
+
         h = x + self.attention.forward(
-            self.attention_norm(x), start_pos, freqs_complex
+            self.attention_norm(x), start_pos, freqs_complex, cache_id, to_cache
         )
         # (B, Seq_Len, Dim) + (B, Seq_Len, Dim) --> (B, Seq_Len, Dim)
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
+
+    def set_from_cache(self, cache_id):
+        self.attention.set_from_cache(cache_id)
+
     
 class Transformer(nn.Module):
 
@@ -256,7 +275,7 @@ class Transformer(nn.Module):
 
         self.freqs_complex = precompute_theta_pos_frequencies(self.args.dim // self.args.n_heads, self.args.max_seq_len * 2, device=self.args.device)
 
-    def forward(self, tokens: torch.Tensor, start_pos: int):
+    def forward(self, tokens: torch.Tensor, start_pos: int, cache_id=None, to_cache=False):
         # (B, Seq_Len)
         batch_size, seq_len = tokens.shape
         assert seq_len == 1, "Only one token at a time can be processed"
@@ -269,7 +288,11 @@ class Transformer(nn.Module):
         
         # Consecutively apply all the encoder layers
         for layer in self.layers:
-            h = layer(h, start_pos, freqs_complex)
+            h = layer(h, start_pos, freqs_complex, cache_id, to_cache)
         h = self.norm(h)
         output = self.output(h).float()
         return output
+    def set_from_cache(self, cache_id):
+        for layer in self.layers:
+          layer.set_from_cache(cache_id)
+    
