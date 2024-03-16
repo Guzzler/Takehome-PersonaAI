@@ -31,7 +31,7 @@ Your system should support multiple saved ‘states’, although you can certain
 - Using KV (Key Value) Caching mechanism and augmenting it to checkpoint various states of the attention across multiple layers.
 
 ## General Benchmarking Results
-### Instruct Style Benchmarking - 
+### Instruct Style Benchmarking
 - Cache setup time: 15.76861310005188s
 - Completion time with cache (Added Input Prompt 1): 0.7743737697601318s
 - Completion time with cache (Added Input Prompt 2): 0.9078752994537354s
